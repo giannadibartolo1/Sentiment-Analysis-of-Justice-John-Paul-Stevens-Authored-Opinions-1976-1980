@@ -35,6 +35,10 @@ The following R packages are required:
 - Comparison of concurring vs. dissenting opinion emotional profiles
 - Temporal trends in emotional language across time 
 
+## View the Analysis
+[Click here to view the full analysis] (https://rpubs.com/giannadibartolo/1401149)
+
+
 ## Author
 Gianna DiBartolo
 Rutgers University
