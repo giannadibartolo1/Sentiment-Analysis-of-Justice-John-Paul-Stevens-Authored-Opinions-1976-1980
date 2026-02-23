@@ -1,0 +1,381 @@
+---
+title: "Sentiment Analysis -- Justice John Paul Stevens Authored Opinions "
+output:
+  html_document:
+  theme: readable
+  pdf_document: default
+date: "2025-03-21"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Project Overiview
+
+##### Sentiment Analysis of Justice John Paul Stevens' dissenting and concurring opinions authored between the years of 1976 to 1980. This analysis aims to examine the emotional influence of Justice Stevens personal experiences on the opinions he wrote during the years prior to Stevens divorce, during his divorce and immediately after his divorce, by assessing emotional distribution from the case text.
+
+
+
+### Data Preparation 
+
+```{r}
+# Install packages
+if (!require("tidyverse")) install.packages("tidyverse")
+if (!require("tidytext")) install.packages("tidytext")
+if (!require("stringr")) install.packages("stringr")
+if (!require("ggplot2")) install.packages("ggplot2")
+if (!require("scales")) install.packages("scales")
+
+# Load library
+library(tidyverse)
+library(tidytext)
+library(stringr)
+library(ggplot2)
+library(scales)
+```
+
+```{r}
+# Load Stevens opinions extracted case data
+df <- read.csv("stevensdata.csv")
+df <- read.csv("stevensdata.csv", stringsAsFactors = FALSE)
+```
+
+
+### Design
+
+```{r}
+# key for column names and items
+id_col           <- "file_title"    # column with a case name 
+type_col         <- "subfolder"    # column with "concurring" or "dissenting"
+text_col         <- "stevens_opinion" # column with full text of Stevens' authored opinion
+year_col         <- "year"          # column with the year
+```
+
+```{r}
+# validate date/years
+df$case_year <- as.integer(df[[year_col]])
+
+missing_years <- sum(is.na(df$case_year))
+if (missing_years > 0) {
+  warning(missing_years, " opinions have no year value. They will be excluded from year-based analyses.")
+}
+```
+
+#### Define custom keyword and phrase lexicon for each emotion
+
+```{r}
+# Each vector contains words and short phrases associated with that category.
+lexicon <- list(
+  Belonging = c(
+    "agree", "agreement","appeasement", "consensus", "we", "our", "together", "common",
+    "shared", "accepted", "acceptance", "harmony", "unity", "join", "collective",
+    "community", "solidarity", "conform", "concur", "majority", "affirm",
+    "accommodate", "inclusive", "cooperate", "mutual", "aligned"
+  ),
+  
+  Liberty = c(
+    "freedom", "liberty", "free", "autonomy", "right", "rights", "independent",
+    "independence", "self-determination", "privacy", "unrestricted", "oppression",
+    "oppressive", "restrict", "restriction", "coerce", "coercion", "compel",
+    "compelled", "forced", "force", "censorship", "suppress", "suppression",
+    "prohibit", "prohibition", "undue burden", "protect", "protection",
+    "shield", "civil liberties", "fundamental right", "constitutional right"
+  ),
+  
+  Empathy = c(
+    "suffer", "suffering", "pain", "harm", "hurt", "burden", "hardship",
+    "vulnerable", "victim", "neglect", "neglected", "misunderstood",
+    "marginalized", "disadvantaged", "disproportionate", "injustice",
+    "unfair", "inequity", "inequality", "compassion", "sympathize",
+    "sympathy", "concern", "affected", "impacted", "plight", "struggle",
+    "dignity", "humane", "humanity", "underserved"
+  ),
+  
+  Control = c(
+    "authority", "power", "duty", "obligation", "enforce", "enforcement",
+    "regulate", "regulation", "govern", "governance", "oversight", "mandate",
+    "mandate", "jurisdiction", "sovereign", "sovereignty", "command",
+    "control", "administer", "administration", "comply", "compliance",
+    "accountability", "responsibility", "sanction", "order", "directive",
+    "subordinate", "supervise", "supervision", "preempt", "preemption",
+    "deferential", "deference", "check", "balance", "limit", "limitation"
+  ),
+  
+Contentment = c(
+    "appropriate", "adequate", "satisf", "reasonable", "proper", "correct",
+    "sound", "uphold", "affirm", "support", "sufficient", "well-established",
+    "consistent", "coherent", "fair", "just", "balance", "harmonious",
+    "endorse", "approve", "commend", "hope", "optimism", "progress",
+    "success", "effective", "confident", "settled", "clear", "agree"
+  ),
+  
+  Discontentment = c(
+    "disagree", "dissent", "error", "wrong", "incorrect", "flawed",
+    "misguided", "regret", "unfortunate", "troubling", "concern",
+    "problematic", "disappoint", "disapproval", "reject", "object",
+    "objection", "fail", "failure", "inadequate", "insufficient",
+    "misinterpret", "misread", "overreach", "unduly", "improper",
+    "unjust", "unfair", "inequitable", "arbitrary", "inconsistent", "unease",
+    "absurd", "perverse", "alarming", "disturbing", "grave", "serious"
+  )
+)
+```
+
+
+### Scoring
+
+```{r}
+## Function to score a single opinion text 
+score_opinion <- function(text, lexicon) {
+  
+  # Normalize text
+  text_lower <- tolower(text)
+  words <- unlist(str_split(text_lower, "\\W+"))  # split on non-word chars
+  
+  scores <- sapply(names(lexicon), function(category) {
+    terms <- lexicon[[category]]
+    # Count matches (supports partial matching via grepl for phrases)
+    total <- sum(sapply(terms, function(term) {
+      sum(grepl(paste0("\\b", term, "\\b"), text_lower))
+    }))
+    return(total)
+  })
+  
+  scores <- as.data.frame(t(scores))
+  
+  # Determine dominant category
+  max_score <- max(scores)
+  if (max_score == 0) {
+    scores$dominant_emotion <- "None"
+  } else {
+    scores$dominant_emotion <- names(which.max(scores[1, 1:length(lexicon)]))
+  }
+  
+  # Normalize scores to proportions (excluding dominant_emotion column)
+  numeric_scores <- scores[, 1:length(lexicon)]
+  total_words <- max(length(words), 1)
+  scores_normalized <- numeric_scores / total_words * 1000  # per 1000 words
+  scores$total_emotion_hits <- sum(numeric_scores)
+  
+  return(cbind(scores_normalized, dominant_emotion = scores$dominant_emotion,
+               total_emotion_hits = scores$total_emotion_hits))
+}
+
+```
+
+```{r}
+## Apply scoring to all opinions
+results <- df %>%
+  rowwise() %>%
+  mutate(scores = list(score_opinion(get(text_col), lexicon))) %>%
+  unnest_wider(scores)
+
+# Add a "None" flag column
+results <- results %>%
+  mutate(dominant_emotion = ifelse(total_emotion_hits == 0, "None", dominant_emotion))
+
+```
+
+### Overall Emotional Distribution
+
+
+
+#### Overview per year for all emotions
+
+```{r}
+# Overview of results 
+print(results %>% select(all_of(c(id_col, type_col, year_col)),
+                          Belonging, Liberty, Empathy, Control,
+                          Contentment, Discontentment,
+                          dominant_emotion, total_emotion_hits))
+```
+
+
+#### Total opinions per emotional category
+
+```{r}
+# Dominant emotion distribution of Results
+emotion_summary <- results %>%
+  group_by(dominant_emotion) %>%
+  summarise(count = n()) %>%
+  mutate(percent = count / sum(count) * 100)
+
+print(emotion_summary)
+```
+
+
+### Opinion Type by Year
+
+
+#### Concurring vs Dissenting (Overall Opinion Type)
+
+```{r}
+# Dominant opinion type per year (concurring vs dissenting)
+results_yr <- results %>% filter(!is.na(case_year))
+opinion_type_by_year <- results_yr %>%
+  group_by(case_year, across(all_of(type_col))) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(case_year) %>%
+  mutate(percent = count / sum(count) * 100,
+         total_opinions = sum(count))
+
+
+dominant_type_per_year <- opinion_type_by_year %>%
+  group_by(case_year) %>%
+  slice_max(order_by = count, n = 1, with_ties = FALSE) %>%
+  rename(dominant_type = all_of(type_col),
+         opinions_of_type = count,
+         pct_of_year = percent)
+
+print(opinion_type_by_year, n = Inf)
+print(dominant_type_per_year %>% select(case_year, dominant_type, 
+                                         opinions_of_type, pct_of_year, 
+                                         total_opinions), n = Inf)
+```
+
+
+#### Concurring vs Dissenting (Dominant Emotion)
+
+```{r}
+# Dominant emotion by opinion type (concurring vs dissenting) 
+emotion_by_type <- results %>%
+  group_by(across(all_of(type_col)), dominant_emotion) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(across(all_of(type_col))) %>%
+  mutate(percent = count / sum(count) * 100)
+
+print(emotion_by_type)
+```
+
+
+### Emotions by Year
+
+
+#### Dominant Emotion by Year
+
+```{r}
+# results for dominant emotion by year
+results_yr <- results %>% filter(!is.na(case_year))
+emotion_by_year <- results_yr %>%
+  group_by(case_year, dominant_emotion) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(case_year) %>%
+  mutate(percent = count / sum(count) * 100)
+print(emotion_by_year)
+```
+
+
+#### Average Emotion Intensity by Year
+
+```{r}
+# results for avergae emotional intensity for a given year
+intensity_by_year <- results_yr %>%
+  group_by(case_year) %>%
+  summarise(across(c(Belonging, Liberty, Empathy, Control,
+                     Contentment, Discontentment), mean),
+            opinion_count = n(),
+            .groups = "drop")
+
+print(intensity_by_year)
+```
+
+
+### Visualizations of Results
+
+```{r}
+# color-coding
+
+emotion_colors <- c(
+  Belonging      = "#4E79A7",
+  Liberty        = "#F28E2B",
+  Empathy        = "#E15759",
+  Control        = "#76B7B2",
+  Contentment    = "#59A14F",
+  Discontentment = "#EDC948"
+)
+```
+
+```{r}
+# Filter out for visualization datasets
+emotion_summary_plot   <- emotion_summary   %>% filter(dominant_emotion != "None")
+emotion_by_type_plot   <- emotion_by_type   %>% filter(dominant_emotion != "None")
+emotion_by_year_plot   <- emotion_by_year   %>% filter(dominant_emotion != "None")
+
+```
+
+```{r}
+# Find top emotions by year and filter out none from visualizations
+# Note: "None" category is retained in scored data and exports but excluded from all plots below for clarity
+top_emotion_per_year <- results_yr %>%
+  filter(dominant_emotion != "None") %>%
+  group_by(case_year, dominant_emotion) %>%
+  summarise(count = n(), .groups = "drop") %>%
+  group_by(case_year) %>%
+  mutate(percent = count / sum(count) * 100) %>%
+  slice_max(order_by = count, n = 1, with_ties = FALSE) %>%
+  rename(dominant_emotion_that_year = dominant_emotion,
+         opinions_with_that_emotion = count,
+         pct_of_year = percent) %>%
+  arrange(case_year)
+
+top_emotion_per_year_plot <- top_emotion_per_year %>% filter(dominant_emotion_that_year != "None")
+```
+
+
+#### Dominant Emotion by Year, 1. View of Distribution 
+
+```{r}
+# stacked bar chart (dominant emotion by year) 
+ggplot(emotion_by_year_plot, aes(x = factor(case_year), y = percent, fill = dominant_emotion)) +
+  geom_bar(stat = "identity", position = "stack") +
+  scale_fill_manual(values = emotion_colors) +
+  labs(title = "Emotion Proportion by Year — Stevens Opinions",
+       x = "Year", y = "Percentage (%)", fill = "Emotion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+#### Dominant Emotion by Year, 2. View of Distribution
+
+```{r}
+# Dominant emotion by year line graph
+ggplot(emotion_by_year_plot, aes(x = case_year, y = percent,
+                                  color = dominant_emotion, group = dominant_emotion)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2.5) +
+  scale_y_continuous(labels = percent_format(scale = 1),
+                     limits = c(0, max(emotion_by_year_plot$percent) * 1.1),
+                     breaks = pretty(c(0, max(emotion_by_year_plot$percent)), n = 8)) +
+  scale_x_continuous(breaks = unique(emotion_by_year_plot$case_year)) +
+  scale_color_manual(values = emotion_colors) +
+  labs(title = "Dominant Emotion % by Year — Stevens Opinions",
+       subtitle = "Each line tracks one emotion's share of opinions per year",
+       x = "Year", y = "% of Opinions", color = "Emotion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom")
+
+```
+
+
+#### Emotional Proportions by Year
+
+```{r}
+# Individual emotion proportions of each year
+ggplot(emotion_by_year_plot, aes(x = factor(case_year), y = percent, fill = dominant_emotion)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  scale_y_continuous(labels = percent_format(scale = 1),
+                     limits = c(0, max(emotion_by_year_plot$percent) * 1.1),
+                     breaks = pretty(c(0, max(emotion_by_year_plot$percent)), n = 8)) +
+  scale_fill_manual(values = emotion_colors) +
+  labs(title = "Emotion Proportion by Year — Stevens Opinions",
+       x = "Year", y = "% of Opinions", fill = "Emotion") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank(),
+        legend.position = "bottom")
+```
+
