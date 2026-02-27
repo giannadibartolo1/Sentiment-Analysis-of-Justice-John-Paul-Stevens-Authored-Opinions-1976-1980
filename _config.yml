@@ -1,6 +1,7 @@
 title: "Sentiment Analysis — Justice John Paul Stevens Authored Opinions"
 description: "A Jekyll site"
 theme: minima
+markdown: kramdown
 exclude:
   - "*.Rmd"
   - "*.R"
